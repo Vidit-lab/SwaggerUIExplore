@@ -135,10 +135,14 @@ def update_task(task_id: int, changes: TaskUpdate, db: Db) -> Task:
     fields = changes.model_dump(exclude_none=True)
     if not fields:
         raise HTTPException(400, "Send at least one of: title, done")
-    # The UPDATE statement arrives in Stage 3.
+    # Column names come from TaskUpdate's own fields, never from the request body,
+    # so this interpolation cannot carry user input. Values stay parameterised.
+    assignments = ", ".join(f"{column} = ?" for column in fields)
+    db.execute(f"UPDATE tasks SET {assignments} WHERE id = ?", (*fields.values(), task_id))
     return task.model_copy(update=fields)
 
 
 @app.delete("/tasks/{task_id}", status_code=204, summary="Delete a task, returning no body")
 def delete_task(task_id: int, db: Db) -> None:
-    find(db, task_id)  # 404s correctly; the DELETE statement arrives in Stage 3.
+    if db.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount == 0:
+        raise HTTPException(404, f"Task {task_id} not found")

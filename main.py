@@ -124,8 +124,9 @@ def get_task(task_id: int, db: Db) -> Task:
 
 @app.post("/tasks", status_code=201, summary="Create a task from a title")
 def create_task(new: TaskCreate, db: Db) -> Task:
-    # Writes move onto SQL in Stage 2; for now this only echoes back what was sent.
-    return Task(id=0, title=new.title, done=False)
+    # id is INTEGER PRIMARY KEY, so SQLite assigns the next one and hands it back.
+    cursor = db.execute("INSERT INTO tasks (title, done) VALUES (?, 0)", (new.title,))
+    return Task(id=cursor.lastrowid, title=new.title, done=False)
 
 
 @app.put("/tasks/{task_id}", summary="Update a task's title and/or done flag")

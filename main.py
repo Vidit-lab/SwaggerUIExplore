@@ -1,11 +1,17 @@
-"""Task API — a small in-memory CRUD to-do list. Swagger UI lives at /docs."""
+"""Task API — a small CRUD to-do list stored in SQLite. Swagger UI lives at /docs."""
 
+import os
+import sqlite3
+from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StringConstraints
+
+# One file on disk, created on first run. The test suite points this elsewhere.
+DB_FILE = os.environ.get("TASKS_DB", "tasks.db")
 
 # A title that is missing, empty or only whitespace is rejected by the model.
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -26,14 +32,55 @@ class TaskUpdate(BaseModel):
     done: bool | None = None
 
 
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id    INTEGER PRIMARY KEY,
+    title TEXT    NOT NULL,
+    done  BOOLEAN NOT NULL DEFAULT 0
+)
+"""
+
+EXAMPLE_TASKS = [
+    ("Read the FastAPI docs", 1),
+    ("Build a CRUD API", 0),
+    ("Push it to GitHub", 0),
+]
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Create the table on startup, and seed it only while it is still empty."""
+    conn = sqlite3.connect(DB_FILE)
+    with conn:
+        conn.execute(SCHEMA)
+        if conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0:
+            conn.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", EXAMPLE_TASKS)
+    conn.close()
+    yield
+
+
+def get_db():
+    """One connection per request, committed only if the endpoint returned cleanly."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+Db = Annotated[sqlite3.Connection, Depends(get_db)]
+
 app = FastAPI(
     title="Task API",
-    version="1.0",
+    version="2.0",
     description="Create, read, update and delete to-do tasks. "
-    "Everything is stored in memory, so the list resets when the server restarts.",
+    "Everything is stored in a SQLite file, so the list survives a restart.",
+    lifespan=lifespan,
 )
 
-# Our "database": a plain list. It resets every time the server restarts.
+# Still the in-memory list — the endpoints move onto SQL in the next stages.
 tasks: list[Task] = [
     Task(id=1, title="Read the FastAPI docs", done=True),
     Task(id=2, title="Build a CRUD API", done=False),

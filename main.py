@@ -1,12 +1,22 @@
+from typing import Annotated
+
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
+
+# A title that is missing, empty or only whitespace is rejected by the model.
+Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class Task(BaseModel):
     id: int
     title: str
     done: bool
+
+
+class TaskCreate(BaseModel):
+    title: Title
 
 
 app = FastAPI(title="Task API", version="1.0")
@@ -32,6 +42,14 @@ def error_response(request: Request, exc: HTTPException) -> JSONResponse:
     return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
 
 
+@app.exception_handler(RequestValidationError)
+def invalid_body(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """A body the models reject is a 400 here, not FastAPI's default 422."""
+    problem = exc.errors()[0]
+    field = ".".join(str(part) for part in problem["loc"][1:]) or "body"
+    return JSONResponse({"error": f"{field}: {problem['msg']}"}, status_code=400)
+
+
 @app.get("/")
 def root():
     return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
@@ -50,3 +68,10 @@ def list_tasks() -> list[Task]:
 @app.get("/tasks/{task_id}")
 def get_task(task_id: int) -> Task:
     return find(task_id)
+
+
+@app.post("/tasks", status_code=201)
+def create_task(new: TaskCreate) -> Task:
+    task = Task(id=max((t.id for t in tasks), default=0) + 1, title=new.title, done=False)
+    tasks.append(task)
+    return task

@@ -1,8 +1,13 @@
 # Task API
 
-A small CRUD API for a to-do list, built with [FastAPI](https://fastapi.tiangolo.com/).
-Tasks live in a Python list in memory — there is no database, so **the list resets
-every time the server restarts**. That is intentional for this assignment.
+A small CRUD API for a to-do list, built with [FastAPI](https://fastapi.tiangolo.com/)
+and stored in a **SQLite** database. The endpoints behave exactly as they did when
+the tasks lived in a Python list — the difference is that the data now survives a
+restart.
+
+```
+Client  ->  FastAPI  ->  SQLite (tasks.db)
+```
 
 ## Install & run
 
@@ -12,11 +17,44 @@ pip install "fastapi[standard]"
 fastapi dev main.py
 ```
 
-The server is then on <http://localhost:8000>, with Swagger UI at
-<http://localhost:8000/docs>.
+That is the whole setup. The server comes up on <http://localhost:8000> with
+Swagger UI at <http://localhost:8000/docs>, and **the database creates itself** on
+first start — there is nothing to install, migrate or seed by hand.
 
-Run the self-check (creates, reads, updates and deletes a task, and asserts every
-status code) with `python test_api.py` — it prints `ok`.
+Run the self-check with `python test_api.py`; it prints `ok`. It exercises the
+whole CRUD cycle, every status code, and the restart-persistence guarantee,
+against a throwaway database in a temp directory rather than your real one.
+
+## Why SQLite
+
+- **No server to run.** Postgres or MySQL would mean a daemon, a port, a user and
+  a password before a single row exists. SQLite is a C library reading one file.
+- **The database is the file.** `tasks.db` can be copied, deleted or inspected
+  with any editor, which makes it easy to see what the API actually wrote.
+- **It is already installed.** Python ships the `sqlite3` module in its standard
+  library, so this project still has exactly one dependency: FastAPI.
+- **It is real SQL.** The same `SELECT`/`INSERT`/`UPDATE`/`DELETE` statements
+  transfer to a bigger database later. Nothing learned here is throwaway.
+
+## Where the database lives
+
+A single file named `tasks.db`, in the directory you start the server from — the
+repository root, if you follow the command above. It is created on first startup,
+along with the `tasks` table:
+
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+    id    INTEGER PRIMARY KEY,
+    title TEXT    NOT NULL,
+    done  BOOLEAN NOT NULL DEFAULT 0
+);
+```
+
+Three example tasks are inserted **only when the table is empty**, so restarting
+the server never duplicates them. `tasks.db` is in `.gitignore`: it is generated
+data, not source, and a fresh clone rebuilds it on the first run.
+
+To point the app at a different file, set `TASKS_DB=/some/other.db`.
 
 ## Endpoints
 

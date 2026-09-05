@@ -80,19 +80,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Still the in-memory list — the endpoints move onto SQL in the next stages.
-tasks: list[Task] = [
-    Task(id=1, title="Read the FastAPI docs", done=True),
-    Task(id=2, title="Build a CRUD API", done=False),
-    Task(id=3, title="Push it to GitHub", done=False),
-]
-
-
-def find(task_id: int) -> Task:
-    for task in tasks:
-        if task.id == task_id:
-            return task
-    raise HTTPException(404, f"Task {task_id} not found")
+def find(db: sqlite3.Connection, task_id: int) -> Task:
+    row = db.execute("SELECT id, title, done FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, f"Task {task_id} not found")
+    return Task(**dict(row))
 
 
 @app.exception_handler(HTTPException)
@@ -120,33 +112,32 @@ def health():
 
 
 @app.get("/tasks", summary="List every task")
-def list_tasks() -> list[Task]:
-    return tasks
+def list_tasks(db: Db) -> list[Task]:
+    rows = db.execute("SELECT id, title, done FROM tasks ORDER BY id")
+    return [Task(**dict(row)) for row in rows]
 
 
 @app.get("/tasks/{task_id}", summary="Get one task by id (404 if there is none)")
-def get_task(task_id: int) -> Task:
-    return find(task_id)
+def get_task(task_id: int, db: Db) -> Task:
+    return find(db, task_id)
 
 
 @app.post("/tasks", status_code=201, summary="Create a task from a title")
-def create_task(new: TaskCreate) -> Task:
-    task = Task(id=max((t.id for t in tasks), default=0) + 1, title=new.title, done=False)
-    tasks.append(task)
-    return task
+def create_task(new: TaskCreate, db: Db) -> Task:
+    # Writes move onto SQL in Stage 2; for now this only echoes back what was sent.
+    return Task(id=0, title=new.title, done=False)
 
 
 @app.put("/tasks/{task_id}", summary="Update a task's title and/or done flag")
-def update_task(task_id: int, changes: TaskUpdate) -> Task:
-    task = find(task_id)
+def update_task(task_id: int, changes: TaskUpdate, db: Db) -> Task:
+    task = find(db, task_id)
     fields = changes.model_dump(exclude_none=True)
     if not fields:
         raise HTTPException(400, "Send at least one of: title, done")
-    for name, value in fields.items():
-        setattr(task, name, value)
-    return task
+    # The UPDATE statement arrives in Stage 3.
+    return task.model_copy(update=fields)
 
 
 @app.delete("/tasks/{task_id}", status_code=204, summary="Delete a task, returning no body")
-def delete_task(task_id: int) -> None:
-    tasks.remove(find(task_id))
+def delete_task(task_id: int, db: Db) -> None:
+    find(db, task_id)  # 404s correctly; the DELETE statement arrives in Stage 3.

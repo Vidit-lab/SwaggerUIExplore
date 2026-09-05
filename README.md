@@ -96,11 +96,3 @@ run from that page, no curl involved.
 
 ![DELETE /tasks/4 returning 204 No Content](docs/Delete.png)
 
-## Notes
-
-Two small pieces of wiring in [main.py](main.py) exist to meet the assignment's
-error contract, which differs from FastAPI's defaults:
-
-- an `HTTPException` handler that reshapes `{"detail": ...}` into `{"error": ...}`
-- a `RequestValidationError` handler that answers **400** instead of FastAPI's 422
-  when a body fails validation

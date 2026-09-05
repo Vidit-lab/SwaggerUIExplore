@@ -1,90 +1,29 @@
-"""Task API — a small CRUD to-do list stored in SQLite. Swagger UI lives at /docs."""
+"""Task API — a small CRUD to-do list stored in Postgres. Swagger UI lives at /docs."""
 
-import os
-import sqlite3
-from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, StringConstraints
 
-# One file on disk, created on first run. The test suite points this elsewhere.
-DB_FILE = os.environ.get("TASKS_DB", "tasks.db")
+from models import Task, TaskCreate, TaskUpdate
+from repository import TaskRepository, get_repository
 
-# A title that is missing, empty or only whitespace is rejected by the model.
-Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-
-
-class Task(BaseModel):
-    id: int
-    title: str
-    done: bool
-
-
-class TaskCreate(BaseModel):
-    title: Title
-
-
-class TaskUpdate(BaseModel):
-    title: Title | None = None
-    done: bool | None = None
-
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS tasks (
-    id    INTEGER PRIMARY KEY,
-    title TEXT    NOT NULL,
-    done  BOOLEAN NOT NULL DEFAULT 0
-)
-"""
-
-EXAMPLE_TASKS = [
-    ("Read the FastAPI docs", 1),
-    ("Build a CRUD API", 0),
-    ("Push it to GitHub", 0),
-]
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Create the table on startup, and seed it only while it is still empty."""
-    conn = sqlite3.connect(DB_FILE)
-    with conn:
-        conn.execute(SCHEMA)
-        if conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0:
-            conn.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", EXAMPLE_TASKS)
-    conn.close()
-    yield
-
-
-def get_db():
-    """One connection per request, committed only if the endpoint returned cleanly."""
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
-
-
-Db = Annotated[sqlite3.Connection, Depends(get_db)]
+Repo = Annotated[TaskRepository, Depends(get_repository)]
 
 app = FastAPI(
     title="Task API",
-    version="2.0",
-    description="Create, read, update and delete to-do tasks. "
-    "Everything is stored in a SQLite file, so the list survives a restart.",
-    lifespan=lifespan,
+    version="3.0",
+    description="Create, read, update and delete to-do tasks, stored in Postgres "
+    "behind a repository interface — the routes below don't know it's SQL.",
 )
 
-def find(db: sqlite3.Connection, task_id: int) -> Task:
-    row = db.execute("SELECT id, title, done FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if row is None:
+
+def find(repo: TaskRepository, task_id: int) -> Task:
+    task = repo.get(task_id)
+    if task is None:
         raise HTTPException(404, f"Task {task_id} not found")
-    return Task(**dict(row))
+    return task
 
 
 @app.exception_handler(HTTPException)
@@ -112,37 +51,30 @@ def health():
 
 
 @app.get("/tasks", summary="List every task")
-def list_tasks(db: Db) -> list[Task]:
-    rows = db.execute("SELECT id, title, done FROM tasks ORDER BY id")
-    return [Task(**dict(row)) for row in rows]
+def list_tasks(repo: Repo) -> list[Task]:
+    return repo.list_all()
 
 
 @app.get("/tasks/{task_id}", summary="Get one task by id (404 if there is none)")
-def get_task(task_id: int, db: Db) -> Task:
-    return find(db, task_id)
+def get_task(task_id: int, repo: Repo) -> Task:
+    return find(repo, task_id)
 
 
 @app.post("/tasks", status_code=201, summary="Create a task from a title")
-def create_task(new: TaskCreate, db: Db) -> Task:
-    # id is INTEGER PRIMARY KEY, so SQLite assigns the next one and hands it back.
-    cursor = db.execute("INSERT INTO tasks (title, done) VALUES (?, 0)", (new.title,))
-    return Task(id=cursor.lastrowid, title=new.title, done=False)
+def create_task(new: TaskCreate, repo: Repo) -> Task:
+    return repo.create(new.title)
 
 
 @app.put("/tasks/{task_id}", summary="Update a task's title and/or done flag")
-def update_task(task_id: int, changes: TaskUpdate, db: Db) -> Task:
-    task = find(db, task_id)
+def update_task(task_id: int, changes: TaskUpdate, repo: Repo) -> Task:
+    find(repo, task_id)
     fields = changes.model_dump(exclude_none=True)
     if not fields:
         raise HTTPException(400, "Send at least one of: title, done")
-    # Column names come from TaskUpdate's own fields, never from the request body,
-    # so this interpolation cannot carry user input. Values stay parameterised.
-    assignments = ", ".join(f"{column} = ?" for column in fields)
-    db.execute(f"UPDATE tasks SET {assignments} WHERE id = ?", (*fields.values(), task_id))
-    return task.model_copy(update=fields)
+    return repo.update(task_id, fields)
 
 
 @app.delete("/tasks/{task_id}", status_code=204, summary="Delete a task, returning no body")
-def delete_task(task_id: int, db: Db) -> None:
-    if db.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount == 0:
+def delete_task(task_id: int, repo: Repo) -> None:
+    if not repo.delete(task_id):
         raise HTTPException(404, f"Task {task_id} not found")

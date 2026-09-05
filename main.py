@@ -1,3 +1,5 @@
+"""Task API — a small in-memory CRUD to-do list. Swagger UI lives at /docs."""
+
 from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Request
@@ -24,7 +26,12 @@ class TaskUpdate(BaseModel):
     done: bool | None = None
 
 
-app = FastAPI(title="Task API", version="1.0")
+app = FastAPI(
+    title="Task API",
+    version="1.0",
+    description="Create, read, update and delete to-do tasks. "
+    "Everything is stored in memory, so the list resets when the server restarts.",
+)
 
 # Our "database": a plain list. It resets every time the server restarts.
 tasks: list[Task] = [
@@ -55,34 +62,34 @@ def invalid_body(request: Request, exc: RequestValidationError) -> JSONResponse:
     return JSONResponse({"error": f"{field}: {problem['msg']}"}, status_code=400)
 
 
-@app.get("/")
+@app.get("/", summary="What this API is")
 def root():
     return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
 
 
-@app.get("/health")
+@app.get("/health", summary="Liveness check — is the server up?")
 def health():
     return {"status": "ok"}
 
 
-@app.get("/tasks")
+@app.get("/tasks", summary="List every task")
 def list_tasks() -> list[Task]:
     return tasks
 
 
-@app.get("/tasks/{task_id}")
+@app.get("/tasks/{task_id}", summary="Get one task by id (404 if there is none)")
 def get_task(task_id: int) -> Task:
     return find(task_id)
 
 
-@app.post("/tasks", status_code=201)
+@app.post("/tasks", status_code=201, summary="Create a task from a title")
 def create_task(new: TaskCreate) -> Task:
     task = Task(id=max((t.id for t in tasks), default=0) + 1, title=new.title, done=False)
     tasks.append(task)
     return task
 
 
-@app.put("/tasks/{task_id}")
+@app.put("/tasks/{task_id}", summary="Update a task's title and/or done flag")
 def update_task(task_id: int, changes: TaskUpdate) -> Task:
     task = find(task_id)
     fields = changes.model_dump(exclude_none=True)
@@ -93,6 +100,6 @@ def update_task(task_id: int, changes: TaskUpdate) -> Task:
     return task
 
 
-@app.delete("/tasks/{task_id}", status_code=204)
+@app.delete("/tasks/{task_id}", status_code=204, summary="Delete a task, returning no body")
 def delete_task(task_id: int) -> None:
     tasks.remove(find(task_id))

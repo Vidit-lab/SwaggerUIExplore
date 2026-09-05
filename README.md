@@ -1,60 +1,89 @@
 # Task API
 
 A small CRUD API for a to-do list, built with [FastAPI](https://fastapi.tiangolo.com/)
-and stored in a **SQLite** database. The endpoints behave exactly as they did when
-the tasks lived in a Python list — the difference is that the data now survives a
-restart.
+and stored in **Postgres**, running in Docker alongside the app.
 
 ```
-Client  ->  FastAPI  ->  SQLite (tasks.db)
+Client  ->  FastAPI (app container)  ->  Postgres (db container, named volume)
 ```
 
 ## Install & run
 
 ```bash
+cp .env.example .env
+docker compose up --build
+```
+
+One command starts both containers. The server comes up on
+<http://localhost:8000>, with Swagger UI at <http://localhost:8000/docs>. The
+database schema and three example tasks are created automatically the first
+time the `db` volume is created — nothing to migrate or seed by hand.
+
+Run the self-check with `python test_api.py` (needs `docker compose up -d db`
+and the venv below); it prints `ok`.
+
+```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install "fastapi[standard]"
-fastapi dev main.py
+pip install -r requirements.txt
 ```
 
-That is the whole setup. The server comes up on <http://localhost:8000> with
-Swagger UI at <http://localhost:8000/docs>, and **the database creates itself** on
-first start — there is nothing to install, migrate or seed by hand.
+## Why Postgres, in Docker
 
-Run the self-check with `python test_api.py`; it prints `ok`. It exercises the
-whole CRUD cycle, every status code, and the restart-persistence guarantee,
-against a throwaway database in a temp directory rather than your real one.
+- **A real client/server database.** SQLite (used in the previous version of
+  this project) is one file read by one process. Postgres is what production
+  actually runs — a server, a network protocol, concurrent connections.
+- **Docker instead of a local install.** `docker compose up` gives every
+  contributor the same Postgres version with no install step and no
+  system-wide service to manage or forget about.
+- **A named volume, not a bind mount.** `pgdata:/var/lib/postgresql/data` in
+  [docker-compose.yml](docker-compose.yml) is what makes the data outlive the
+  container — `docker compose down && docker compose up` throws the
+  containers away and rebuilds them from scratch, and the rows are still
+  there. Proof is below.
 
-## Why SQLite
+## The repository seam — honestly
 
-- **No server to run.** Postgres or MySQL would mean a daemon, a port, a user and
-  a password before a single row exists. SQLite is a C library reading one file.
-- **The database is the file.** `tasks.db` can be copied, deleted or inspected
-  with any editor, which makes it easy to see what the API actually wrote.
-- **It is already installed.** Python ships the `sqlite3` module in its standard
-  library, so this project still has exactly one dependency: FastAPI.
-- **It is real SQL.** The same `SELECT`/`INSERT`/`UPDATE`/`DELETE` statements
-  transfer to a bigger database later. Nothing learned here is throwaway.
+The previous version of this project (SQLite) had the routes in `main.py`
+call `sqlite3` directly. Moving to Postgres was the moment to stop doing that:
 
-## Where the database lives
+- **[models.py](models.py)** — the `Task` / `TaskCreate` / `TaskUpdate` shapes,
+  shared by the routes and every repository implementation.
+- **[repository.py](repository.py)** — a `TaskRepository` `Protocol` (`list_all`,
+  `get`, `create`, `update`, `delete`), and `PostgresTaskRepository`, the only
+  implementation of it, built on [`psycopg`](https://www.psycopg.org/psycopg3/).
+- **[main.py](main.py)** — routes take a `repo: Repo` parameter and call those
+  five methods. No route knows it's talking to SQL, let alone Postgres.
 
-A single file named `tasks.db`, in the directory you start the server from — the
-repository root, if you follow the command above. It is created on first startup,
-along with the `tasks` table:
+This is the first commit where that seam exists, so there is no earlier
+in-memory implementation it was swapped in for — the honest claim is narrower:
+introducing the interface and writing the Postgres class against it, in the
+same change, is what proves the routes don't need to know the storage
+underneath. A second implementation (in-memory, for fast tests; SQLite; a
+different database) would be a new class in `repository.py` and nothing else
+would move.
 
-```sql
-CREATE TABLE IF NOT EXISTS tasks (
-    id    INTEGER PRIMARY KEY,
-    title TEXT    NOT NULL,
-    done  BOOLEAN NOT NULL DEFAULT 0
-);
+## Configuration
+
+Connection details live in `.env` (gitignored — `.env.example` is the
+committed template):
+
+```
+POSTGRES_USER=taskapi
+POSTGRES_PASSWORD=taskapi
+POSTGRES_DB=tasks
+DATABASE_URL=postgresql://taskapi:taskapi@db:5432/tasks
 ```
 
-Three example tasks are inserted **only when the table is empty**, so restarting
-the server never duplicates them. `tasks.db` is in `.gitignore`: it is generated
-data, not source, and a fresh clone rebuilds it on the first run.
+`db` in `DATABASE_URL` is the Postgres service name, resolved inside the
+Compose network — not `localhost`. From the host machine (a GUI client, say),
+Postgres is reachable at `localhost:5433`; it's mapped there instead of the
+default 5432 because that port was already taken by another project on this
+machine — see the comment in [docker-compose.yml](docker-compose.yml).
 
-To point the app at a different file, set `TASKS_DB=/some/other.db`.
+The table is created by [init.sql](init.sql), which Postgres runs
+automatically **only the first time the volume is created** — Postgres's own
+init-script mechanism, not application code, is what guarantees the three
+example tasks are inserted exactly once.
 
 ## Endpoints
 
@@ -79,7 +108,7 @@ HTTP/1.1 201 Created
 content-length: 40
 content-type: application/json
 
-{"id":4,"title":"Buy milk","done":false}
+{"id":8,"title":"Buy milk","done":false}
 
 $ curl -i http://localhost:8000/tasks/99
 HTTP/1.1 404 Not Found
@@ -88,14 +117,14 @@ content-type: application/json
 
 {"error":"Task 99 not found"}
 
-$ curl -i -X PUT http://localhost:8000/tasks/4 -H "Content-Type: application/json" -d '{"done":true}'
+$ curl -i -X PUT http://localhost:8000/tasks/8 -H "Content-Type: application/json" -d '{"done":true}'
 HTTP/1.1 200 OK
 content-length: 39
 content-type: application/json
 
-{"id":4,"title":"Buy milk","done":true}
+{"id":8,"title":"Buy milk","done":true}
 
-$ curl -i -X DELETE http://localhost:8000/tasks/4
+$ curl -i -X DELETE http://localhost:8000/tasks/8
 HTTP/1.1 204 No Content
 content-type: application/json
 
@@ -106,6 +135,37 @@ content-type: application/json
 
 {"error":"title: Field required"}
 ```
+
+(The id is 8, not 1 — Postgres's `SERIAL` keeps counting across every task
+ever created on this database, including earlier manual testing; it never
+reuses an id.)
+
+## Proof: data survives a full container restart
+
+Not just `docker compose restart` — a full teardown and rebuild, so nothing
+about the containers themselves is reused:
+
+```console
+$ curl -s http://localhost:8000/tasks/5
+{"id":5,"title":"Buy milk","done":false}
+
+$ docker compose down
+ Container swaggeruiexplore-app-1  Removed
+ Container swaggeruiexplore-db-1  Removed
+ Network swaggeruiexplore_default  Removed
+
+$ docker compose up -d
+ Container swaggeruiexplore-db-1  Started
+ Container swaggeruiexplore-app-1  Started
+
+$ curl -s http://localhost:8000/tasks/5
+{"id":5,"title":"Buy milk","done":false}
+```
+
+`docker compose down` deletes the containers and the network; it does **not**
+touch the `pgdata` named volume (that would need `docker compose down -v`).
+The task is still there afterwards because it was never inside the
+container — it was in the volume the whole time.
 
 ## Swagger UI
 
@@ -133,4 +193,3 @@ run from that page, no curl involved.
 **Delete** — `DELETE /tasks/4` returns **204** with an empty body:
 
 ![DELETE /tasks/4 returning 204 No Content](docs/Delete.png)
-

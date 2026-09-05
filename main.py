@@ -19,6 +19,11 @@ class TaskCreate(BaseModel):
     title: Title
 
 
+class TaskUpdate(BaseModel):
+    title: Title | None = None
+    done: bool | None = None
+
+
 app = FastAPI(title="Task API", version="1.0")
 
 # Our "database": a plain list. It resets every time the server restarts.
@@ -75,3 +80,19 @@ def create_task(new: TaskCreate) -> Task:
     task = Task(id=max((t.id for t in tasks), default=0) + 1, title=new.title, done=False)
     tasks.append(task)
     return task
+
+
+@app.put("/tasks/{task_id}")
+def update_task(task_id: int, changes: TaskUpdate) -> Task:
+    task = find(task_id)
+    fields = changes.model_dump(exclude_none=True)
+    if not fields:
+        raise HTTPException(400, "Send at least one of: title, done")
+    for name, value in fields.items():
+        setattr(task, name, value)
+    return task
+
+
+@app.delete("/tasks/{task_id}", status_code=204)
+def delete_task(task_id: int) -> None:
+    tasks.remove(find(task_id))

@@ -2,3 +2,5 @@
 __pycache__/
 # Generated on first run — the app recreates it, so it is not source.
 tasks.db
+# Real secrets/config — .env.example is the committed template.
+.env
